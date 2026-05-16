@@ -1,10 +1,11 @@
 $acctkey = 'be8f267418123fcab86a875ea890aa88'
 $orgkey  = $env:huntressorganizationkey
 
-$repoApiUrl  = "https://api.github.com/repos/seandboss/GigglesandShits/contents"
-$zipDest     = "C:\temp\Huntress.zip"
-$extractDir  = "C:\temp\huntress"
+$repoApiUrl  = "https://api.github.com/repos/seandboss/GigglesandShits/contents/Huntress"
 $tempDir     = "C:\temp"
+$part1Dest   = "C:\temp\huntress.part1.dat"
+$part2Dest   = "C:\temp\huntress.part2.dat"
+$installerDest = "C:\temp\huntress-installer.exe"
 
 function Write-Log {
     param([string]$Message, [string]$Level = 'Info')
@@ -40,12 +41,43 @@ function Get-GitBlobSha1 {
     }
 }
 
+function Download-IfNeeded {
+    param([string]$Url, [string]$Dest, [string]$ExpectedSha, [string]$Label)
+    $needsDownload = $true
+    if (Test-Path $Dest) {
+        $localSha = Get-GitBlobSha1 -FilePath $Dest
+        if ($localSha -eq $ExpectedSha) {
+            Write-Log "$Label already up to date, skipping download." -Level 'Warning'
+            $needsDownload = $false
+        } else {
+            Write-Log "Re-downloading $Label (local file differs from GitHub)..."
+        }
+    } else {
+        Write-Log "Downloading $Label..."
+    }
+
+    if ($needsDownload) {
+        try {
+            Invoke-WebRequest -Uri $Url -OutFile $Dest -ErrorAction Stop
+        } catch {
+            Write-Log "Failed to download ${Label}: $_" -Level 'Error'
+            exit 1
+        }
+        $downloadedSha = Get-GitBlobSha1 -FilePath $Dest
+        if ($downloadedSha -ne $ExpectedSha) {
+            Write-Log "SHA mismatch for $Label. Expected $ExpectedSha, got $downloadedSha." -Level 'Error'
+            exit 1
+        }
+        Write-Log "$Label downloaded and verified." -Level 'Success'
+    }
+}
+
 # 1. Ensure temp directory exists
 if (-not (Test-Path $tempDir)) {
     New-Item -ItemType Directory -Path $tempDir | Out-Null
 }
 
-# 2. Fetch repo contents from GitHub
+# 2. Fetch Huntress folder contents from GitHub
 Write-Log "Fetching file list from GitHub..."
 try {
     $contents = Invoke-RestMethod -Uri $repoApiUrl -Headers @{
@@ -58,66 +90,49 @@ try {
     exit 1
 }
 
-$huntressFile = $contents | Where-Object { $_.type -eq "file" -and $_.name -eq "huntress.zip" }
-if (-not $huntressFile) {
-    Write-Log "huntress.zip not found in the GitHub repository." -Level 'Error'
+$part1File = $contents | Where-Object { $_.type -eq "file" -and $_.name -like "*.part1.dat" }
+$part2File = $contents | Where-Object { $_.type -eq "file" -and $_.name -like "*.part2.dat" }
+
+if (-not $part1File) {
+    Write-Log "part1.dat not found in the GitHub repository." -Level 'Error'
+    exit 1
+}
+if (-not $part2File) {
+    Write-Log "part2.dat not found in the GitHub repository." -Level 'Error'
     exit 1
 }
 
-# 3. Download huntress.zip (skip if already up to date)
-$needsDownload = $true
-if (Test-Path $zipDest) {
-    $localSha = Get-GitBlobSha1 -FilePath $zipDest
-    if ($localSha -eq $huntressFile.sha) {
-        Write-Log "huntress.zip already up to date, skipping download." -Level 'Warning'
-        $needsDownload = $false
-    } else {
-        Write-Log "Re-downloading huntress.zip (local file differs from GitHub)..."
-    }
-} else {
-    Write-Log "Downloading huntress.zip..."
-}
+# 3. Download both parts (skip each if already up to date)
+Download-IfNeeded -Url $part1File.download_url -Dest $part1Dest -ExpectedSha $part1File.sha -Label $part1File.name
+Download-IfNeeded -Url $part2File.download_url -Dest $part2Dest -ExpectedSha $part2File.sha -Label $part2File.name
 
-if ($needsDownload) {
+# 4. Combine the two parts into the installer exe
+Write-Log "Combining parts into installer..."
+try {
+    $outStream = [System.IO.File]::OpenWrite($installerDest)
     try {
-        Invoke-WebRequest -Uri $huntressFile.download_url -OutFile $zipDest -ErrorAction Stop
-    } catch {
-        Write-Log "Failed to download huntress.zip: $_" -Level 'Error'
-        exit 1
+        foreach ($partPath in @($part1Dest, $part2Dest)) {
+            $inStream = [System.IO.File]::OpenRead($partPath)
+            try {
+                $inStream.CopyTo($outStream)
+            } finally {
+                $inStream.Dispose()
+            }
+        }
+    } finally {
+        $outStream.Dispose()
     }
-    $downloadedSha = Get-GitBlobSha1 -FilePath $zipDest
-    if ($downloadedSha -ne $huntressFile.sha) {
-        Write-Log "SHA mismatch after downloading huntress.zip. Expected $($huntressFile.sha), got $downloadedSha." -Level 'Error'
-        exit 1
-    }
-    Write-Log "huntress.zip downloaded and verified." -Level 'Success'
-}
-
-# 4. Clear the extract directory before extraction
-if (Test-Path $extractDir) {
-    Write-Log "Clearing existing contents of $extractDir..."
-    Remove-Item -Path $extractDir -Recurse -Force
-}
-New-Item -ItemType Directory -Path $extractDir | Out-Null
-
-# 5. Extract the zip
-Write-Log "Extracting huntress.zip to $extractDir..."
-Expand-Archive -Path $zipDest -DestinationPath $extractDir -Force
-Write-Log "Extraction complete." -Level 'Success'
-
-# 6. Find the installer exe (name may change with version)
-$installer = Get-ChildItem -Path $extractDir -Filter "*.exe" -File | Select-Object -First 1
-if (-not $installer) {
-    Write-Log "No .exe found in $extractDir after extraction." -Level 'Error'
+} catch {
+    Write-Log "Failed to combine parts: $_" -Level 'Error'
     exit 1
 }
-Write-Log "Found installer: $($installer.Name)"
+Write-Log "Parts combined into $installerDest." -Level 'Success'
 
-# 7. Run the installer
+# 5. Run the installer
 $installArgs = "/ACCT_KEY=`"$acctkey`" /ORG_KEY=`"$orgkey`" /S"
-Write-Log "Running installer: $($installer.FullName) $installArgs"
+Write-Log "Running installer: $installerDest $installArgs"
 
-$process = Start-Process -FilePath $installer.FullName -ArgumentList $installArgs -Wait -PassThru -NoNewWindow
+$process = Start-Process -FilePath $installerDest -ArgumentList $installArgs -Wait -PassThru -NoNewWindow
 
 if ($process.ExitCode -eq 0) {
     Write-Log "Huntress installed successfully." -Level 'Success'
