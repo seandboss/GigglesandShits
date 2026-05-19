@@ -58,7 +58,7 @@ function Download-IfNeeded {
 
     if ($needsDownload) {
         try {
-            Invoke-WebRequest -Uri $Url -OutFile $Dest -ErrorAction Stop
+            Invoke-WebRequest -Uri $Url -OutFile $Dest -UserAgent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36" -ErrorAction Stop
         } catch {
             Write-Log "Failed to download ${Label}: $_" -Level 'Error'
             exit 1
@@ -81,7 +81,7 @@ if (-not (Test-Path $tempDir)) {
 Write-Log "Fetching file list from GitHub..."
 try {
     $contents = Invoke-RestMethod -Uri $repoApiUrl -Headers @{
-        "User-Agent"           = "PowerShell"
+        "User-Agent"           = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
         "Accept"               = "application/vnd.github+json"
         "X-GitHub-Api-Version" = "2022-11-28"
     }
